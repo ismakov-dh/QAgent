@@ -61,11 +61,31 @@ Context is provided in two ways:
 }
 ```
 
+**Full config with all optional fields:**
+```json
+{
+  "app": { "name": "...", "url": "...", "description": "..." },
+  "auth": {
+    "user": { "username": "...", "password": "${...}" },
+    "admin": { "username": "...", "password": "${...}", "cookie": "session=abc123" }
+  },
+  "changelog": "...",
+  "flows": [],
+  "browser": { "provider": "...", "url": "...", "image": "..." },
+  "reporters": [],
+  "timeouts": { "step": 30, "flow": 300, "session": 1800 },
+  "limits": { "max_inferred_flows": 5 },
+  "inference": true,
+  "trigger": "auto"
+}
+```
+
 **Key decisions:**
-- Credentials via env vars, never hardcoded
+- Credentials via env vars, never hardcoded. For OAuth/SSO apps, provide a pre-authenticated `cookie` in the auth block
 - `flows` are optional — Claude infers additional flows from `description` + `changelog`
 - Steps use natural language for `target` and `expect` — Claude interprets them
 - Multi-app support: each app has its own `qagent.json`, one app tested per invocation
+- `timeouts` values are in seconds. `trigger` can be `"auto"` (detect), `"manual"`, or `"ci"`
 
 ## Execution Engine — MCP-Only Browser Control
 
@@ -362,7 +382,7 @@ Before any test execution, the plugin validates:
 1. **Browser availability** — at least one MCP browser server is reachable. If not → exit with clear error: "No browser MCP server available. Configure `browser.provider` in qagent.json or ensure Chrome DevTools MCP is connected."
 2. **App reachability** — HTTP HEAD request to app URL. If unreachable → exit with error: "App at {url} is not reachable." This is reported as an infrastructure error, not a test failure.
 3. **Env var resolution** — all `${VAR}` references in config are resolved. Missing vars → exit with error listing the unresolved variables.
-4. **Config discovery** — plugin looks for `qagent.json` in: (1) path passed as argument, (2) current working directory, (3) project root. First match wins.
+4. **Config discovery** — plugin looks for `qagent.json` in: (1) path passed as argument, (2) current working directory, (3) nearest ancestor directory containing `.git`. First match wins.
 
 ### During execution
 
@@ -425,4 +445,15 @@ Reporter scripts are simple executables (Node.js or shell) in `scripts/reporters
 - No visual regression / pixel diffing (Claude uses judgment, not screenshots-to-baseline comparison)
 - No test recording/playback mode
 - No built-in credential management (env vars only)
-- No OAuth/SSO/MFA/CAPTCHA handling
+- No OAuth/SSO/MFA/CAPTCHA handling (use pre-authenticated cookie as workaround)
+
+## CI Exit Codes
+
+| Condition | Exit code |
+|-----------|-----------|
+| All flows passed, no issues | 0 |
+| At least one `critical` or `high` failure | 1 |
+| Only `medium`/`low` issues | 0 (warnings printed) |
+| Infrastructure error (app unreachable, no browser, missing env vars) | 2 |
+
+This lets CI pipelines distinguish between test failures (1) and setup problems (2).
