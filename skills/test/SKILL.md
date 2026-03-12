@@ -103,25 +103,33 @@ Generate the test plan following the same logic as the `/qagent:plan` skill:
 
 For each flow in the plan, sequentially:
 
-### 3.1 Clear browser state
+**Before starting each flow, check if the session timeout has been exceeded. If so, mark all remaining flows as `"skipped"` and proceed to Phase 5.**
 
-Clear cookies, localStorage, and session data to ensure a clean state. Each flow starts fresh.
+### 3.1 Open a dedicated browser page
+
+Each flow gets its own isolated browser page. This provides clean cookie/storage state without manual clearing.
 
 **Chrome DevTools MCP:**
-1. `navigate_page` to `"about:blank"`
-2. `evaluate_script`: `"localStorage.clear(); sessionStorage.clear();"`
-3. `evaluate_script`: `"document.cookie.split(';').forEach(c => document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/');"`
+1. Call `list_pages` to see current pages
+2. Call `new_page` with:
+   - `url`: the app URL (e.g., `"https://staging.myapp.com"`)
+   - `isolatedContext`: `"qagent-flow-{flow-id}"` — this creates an isolated browser context with its own cookies, localStorage, and session storage. No state leaks between flows.
+3. Note the returned `pageId` — pass it to the flow-executor subagent
 
 **Playwright MCP:**
-1. Navigate to `"about:blank"`
-2. Use evaluate to run the same JS cleanup
-3. If Playwright MCP exposes a `clear_cookies` or `clear_storage` tool, prefer that
+1. Use the equivalent page creation tool
+2. If Playwright MCP supports isolated contexts, use them
+3. Otherwise, create a new page and clear state manually:
+   - Navigate to `"about:blank"`
+   - `evaluate`: `"localStorage.clear(); sessionStorage.clear();"`
+   - `evaluate`: `"document.cookie.split(';').forEach(c => document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/');"`
 
 ### 3.2 Dispatch flow-executor subagent
 
 Use the Agent tool to dispatch the `flow-executor` subagent. Provide it with:
 - The flow definition (JSON with id, name, role, steps)
 - App URL
+- **Page ID** — the `pageId` of the browser page opened in 3.1. The flow-executor must call `select_page` with this ID before performing any browser actions.
 - Resolved auth credentials for the flow's role (username + password, already resolved from secrets)
 - Timeouts from config (`timeouts.step` default 30s, `timeouts.flow` default 300s)
 - Which MCP browser tools are available (detected in Phase 1.4)
@@ -132,6 +140,7 @@ Agent tool with prompt:
 "You are a QAgent flow-executor. Execute this flow against {app_url}:
 
 Flow: {flow JSON}
+Page ID: {pageId} — call select_page with this ID before any browser action
 Auth: username={username}, password={password}
 Timeouts: step={step_timeout}s, flow={flow_timeout}s
 Browser: {chrome-devtools|playwright} MCP tools available
@@ -139,9 +148,21 @@ Browser: {chrome-devtools|playwright} MCP tools available
 Follow the flow-executor instructions exactly. Return the updated flow JSON with all step results."
 ```
 
-### 3.3 Collect results
+### 3.3 Collect results and close the page
 
-Receive the updated flow from the subagent. Update the plan with the results. Track:
+Receive the updated flow from the subagent. Then **always close the browser page**, regardless of success or failure:
+
+**Chrome DevTools MCP:**
+- Call `close_page` with the `pageId` from step 3.1
+- If `close_page` fails (e.g., it's the last page), log a warning but continue
+
+**Playwright MCP:**
+- Use the equivalent page close tool
+- If no explicit close tool, navigate to `about:blank` to free resources
+
+**This is critical:** Unclosed pages leak memory, accumulate state, and can interfere with subsequent flows or the user's browser. Always close, even if the flow errored or timed out.
+
+Update the plan with the results. Track:
 - How many flows passed/failed
 - Any deviations discovered
 - Total duration
@@ -215,7 +236,21 @@ Same as staging, but instead of writing a staging file:
 3. Proposals only modify `flows` — never `app`, `auth`, `secrets`, or `reporters`
 4. After applying, output: "Auto-accepted {N} proposals. Updated qagent.json."
 
-## Phase 5: Reporting
+## Phase 5: Cleanup & Reporting
+
+### 5.0 Close any remaining browser pages
+
+Before reporting, ensure all QAgent-opened pages are closed:
+
+1. Call `list_pages` to get all open pages
+2. For each page that was opened by QAgent (pages in `qagent-flow-*` isolated contexts), call `close_page`
+3. Do NOT close pages that existed before QAgent started — only close pages we created
+4. If all pages would be closed (browser needs at least one), leave the last one on `about:blank`
+
+This handles edge cases where:
+- A flow-executor subagent crashed before the orchestrator could close the page
+- The session timed out and flows were skipped before cleanup
+- An error in Phase 3/4 caused early exit to Phase 5
 
 ### 5.1 Save the plan
 
@@ -271,6 +306,7 @@ If a flow exceeds its timeout, mark remaining steps as `"status": "skipped"` and
 - Always take screenshots — they are the primary evidence for pass/fail decisions
 - When verifying state changes, wait briefly (up to 3s) for async updates before declaring failure
 - If a page shows a loading spinner, wait for it to complete before evaluating
-- Browser state **MUST** be cleared between flows to prevent cross-contamination
+- Each flow gets its own isolated browser page — **always close it** when the flow completes (pass or fail)
+- Run Phase 5.0 cleanup before reporting to catch any orphaned pages
 - Proposals from the learning loop only modify `flows` — never other config sections
 - In `auto-accept` mode, cap at 10 proposals per run

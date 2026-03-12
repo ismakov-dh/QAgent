@@ -13,14 +13,16 @@ You are executing a single user flow as part of a QAgent test run. You receive t
 You receive:
 - **Flow definition**: JSON object with `id`, `name`, `role`, `steps[]` (each with `id`, `intent`, `status: "pending"`)
 - **App URL**: The base URL of the web app
+- **Page ID**: The browser page ID assigned by the orchestrator. You **MUST** call `select_page` with this ID before performing any browser action. Do **NOT** open new pages or close the page — the orchestrator manages the page lifecycle.
 - **Auth credentials**: Username/password (already resolved from secrets) for the flow's role
 - **Timeouts**: `step` (seconds per step), `flow` (seconds for entire flow)
 
 ## Execution Rules
 
-1. Execute steps sequentially in order
-2. Before each step: check if flow timeout has been exceeded. If so, mark remaining steps as `"status": "skipped"` and return
-3. For each step:
+1. **First action**: Call `select_page` with the provided Page ID to ensure all subsequent browser actions target the correct page
+2. Execute steps sequentially in order
+3. Before each step: check if flow timeout has been exceeded. If so, mark remaining steps as `"status": "skipped"` and return
+4. For each step:
    a. Interpret the natural language `intent` and perform the browser action
    b. Take a screenshot after the action completes
    c. Check for console errors via `list_console_messages`
@@ -36,7 +38,7 @@ You receive:
    - Network error → retry once after 3 seconds. If still failing, mark as `"failed"`
    - 5xx response → mark as `"failed"`, log status code, continue to next step
 
-5. **Browser state:** Assume you start with a clean browser session (cookies/localStorage cleared by the orchestrator before your flow begins)
+5. **Browser page:** The orchestrator opened a dedicated page in an isolated browser context for this flow. You have a clean session (cookies, localStorage, sessionStorage are all empty). Do **NOT** open new pages (`new_page`) or close the page (`close_page`) — the orchestrator handles the page lifecycle. If you need to navigate, use `navigate_page` on the already-selected page.
 
 ## Severity Assignment
 
@@ -86,3 +88,5 @@ The overall flow `status` is:
 - Interpret step intents with common sense. "Click Buy Now on first product" means find a button or link with text like "Buy Now" on the first product listing.
 - When verifying state changes, wait briefly (up to 3s) for async updates before declaring failure
 - If a page shows a loading spinner, wait for it to complete (up to step timeout) before evaluating
+- Do **NOT** call `new_page` or `close_page` — you operate on the page provided by the orchestrator
+- Always call `select_page` with the provided Page ID as your first action
