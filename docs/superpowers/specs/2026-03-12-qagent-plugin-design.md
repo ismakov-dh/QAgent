@@ -32,8 +32,12 @@ Context is provided in two ways:
     "description": "E-commerce platform for digital goods"
   },
   "auth": {
-    "admin": { "username": "admin@test.com", "password": "${ADMIN_PASSWORD}" },
-    "user": { "username": "user@test.com", "password": "${USER_PASSWORD}" }
+    "admin": { "username": "admin@test.com", "password": "secret:ADMIN_PASSWORD" },
+    "user": { "username": "user@test.com", "password": "secret:USER_PASSWORD" }
+  },
+  "secrets": {
+    "provider": "file",
+    "path": "/var/run/secrets/qagent"
   },
   "changelog": "Added payment flow via Stripe. Fixed login redirect loop for expired sessions.",
   "flows": [
@@ -66,26 +70,158 @@ Context is provided in two ways:
 {
   "app": { "name": "...", "url": "...", "description": "..." },
   "auth": {
-    "user": { "username": "...", "password": "${...}" },
-    "admin": { "username": "...", "password": "${...}", "cookie": "session=abc123" }
+    "user": { "username": "...", "password": "secret:USER_PASSWORD" },
+    "admin": { "username": "...", "password": "secret:ADMIN_PASSWORD", "cookie": "session=abc123" }
+  },
+  "secrets": {
+    "provider": "file | env",
+    "path": "/var/run/secrets/qagent"
   },
   "changelog": "...",
   "flows": [],
   "browser": { "provider": "...", "url": "...", "image": "..." },
   "reporters": [],
+  "secrets": { "provider": "file | env", "path": "/var/run/secrets/qagent" },
   "timeouts": { "step": 30, "flow": 300, "session": 1800 },
   "limits": { "max_inferred_flows": 5 },
   "inference": true,
-  "trigger": "auto"
+  "trigger": "auto",
+  "learning": {
+    "enabled": true,
+    "mode": "interactive | staging | auto-accept",
+    "staging_path": "./qagent-proposed.json"
+  }
 }
 ```
 
 **Key decisions:**
-- Credentials via env vars, never hardcoded. For OAuth/SSO apps, provide a pre-authenticated `cookie` in the auth block
+- Credentials reference secrets via `secret:KEY_NAME` prefix, never hardcoded
+- For OAuth/SSO apps, provide a pre-authenticated `cookie` in the auth block
 - `flows` are optional — Claude infers additional flows from `description` + `changelog`
 - Steps use natural language for `target` and `expect` — Claude interprets them
 - Multi-app support: each app has its own `qagent.json`, one app tested per invocation
 - `timeouts` values are in seconds. `trigger` can be `"auto"` (detect), `"manual"`, or `"ci"`
+
+## Secrets
+
+Values prefixed with `secret:` are resolved at runtime from a secrets provider.
+
+### Resolution order
+
+1. **File provider** (`"provider": "file"`) — reads from flat files in a directory. Each secret is a file named after the key, containing the value. Default path: `/var/run/secrets/qagent` (Docker convention).
+   ```
+   /var/run/secrets/qagent/
+   ├── ADMIN_PASSWORD     # contains: s3cret
+   ├── USER_PASSWORD      # contains: pa$$word
+   └── SLACK_WEBHOOK      # contains: https://hooks.slack.com/...
+   ```
+   `"password": "secret:ADMIN_PASSWORD"` → reads `/var/run/secrets/qagent/ADMIN_PASSWORD`
+
+2. **Env provider** (`"provider": "env"`) — reads from environment variables. `"password": "secret:ADMIN_PASSWORD"` → reads `$ADMIN_PASSWORD`.
+
+3. **Fallback** — if no `secrets` block is configured, `secret:KEY` falls back to env var `$KEY`. This keeps backward compatibility with simple setups.
+
+### Validation
+
+All `secret:` references are resolved during startup validation (before any tests run). Missing secrets → exit with error listing unresolved keys. Secret values are never logged or included in reports/screenshots.
+
+## Learning Loop
+
+When a test fails, QAgent can analyze the failure, propose new or updated test cases, and persist them back to `qagent.json`. This creates a continuous improvement cycle — the test suite gets smarter with each run.
+
+### How it works
+
+1. A flow step fails or a deviation is spotted
+2. Claude gathers additional context from the failure: screenshots, console errors, network state, DOM around the failing element
+3. Claude reasons about what went wrong and proposes:
+   - **Updated steps** for the failing flow (e.g., "add a wait for spinner to disappear before verifying")
+   - **New flows** to cover related edge cases (e.g., "what if the user double-clicks Submit?")
+4. Proposals are presented for approval (behavior depends on mode)
+5. Approved changes are written back to `qagent.json`
+
+### Modes
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| `interactive` | Manual invocation | Right after each failure, Claude shows the proposal in the conversation and waits for user approval. User can accept, reject, or modify each proposal. |
+| `staging` | CI | All proposals are collected and written to a staging file (default: `./qagent-proposed.json`). Reported alongside test results so a human can review and merge. |
+| `auto-accept` | CI | Proposals are automatically accepted and written directly to `qagent.json`. Useful for trusted pipelines. Changes are committed with a descriptive message. |
+
+### Default mode by trigger
+
+- `trigger: "manual"` → `interactive`
+- `trigger: "ci"` → `staging`
+- Can always be overridden in config: `"learning": { "mode": "auto-accept" }`
+
+### Staging file format
+
+```json
+{
+  "generated_at": "2026-03-12T14:30:00Z",
+  "source_run": "qagent-plan-2026-03-12-143000.json",
+  "proposals": [
+    {
+      "id": "p1",
+      "type": "update-flow",
+      "flow": "purchase-flow",
+      "reason": "Payment step fails because spinner blocks the verify step. Adding explicit wait.",
+      "diff": {
+        "before": { "action": "verify", "expect": "order status shows 'Confirmed'" },
+        "after": [
+          { "action": "wait", "for": "spinner to disappear", "timeout": 10 },
+          { "action": "verify", "expect": "order status shows 'Confirmed'" }
+        ]
+      }
+    },
+    {
+      "id": "p2",
+      "type": "new-flow",
+      "reason": "Payment error toast suggests the payment service may be flaky. Add a retry-payment test.",
+      "flow": {
+        "name": "payment-retry",
+        "role": "user",
+        "steps": [
+          { "action": "login" },
+          { "action": "navigate", "to": "/products" },
+          { "action": "click", "target": "Buy Now on first product" },
+          { "action": "complete-payment" },
+          { "action": "verify", "expect": "error toast appears" },
+          { "action": "click", "target": "Retry" },
+          { "action": "verify", "expect": "order status shows 'Confirmed'" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Interactive mode conversation flow
+
+```
+✗ Step "Complete payment" FAILED
+  Observation: Spinner appeared for 8s, then error toast
+
+Claude: I noticed the payment step failed. Based on the error, I'd like to propose:
+
+1. UPDATE purchase-flow: Add a wait step before verify
+   (the spinner blocks verification — need to wait for it to clear)
+
+2. NEW FLOW payment-retry: Test the retry path after payment failure
+   (the error toast has a Retry button — this path should be tested)
+
+Accept proposal 1? [y/n/edit]
+> y
+Accept proposal 2? [y/n/edit]
+> n
+
+✓ Updated purchase-flow in qagent.json
+```
+
+### Guards
+
+- Learning can be disabled entirely: `"learning": { "enabled": false }`
+- In `auto-accept` mode, max 10 proposals per run (prevents runaway generation)
+- Proposals never modify the `app`, `auth`, `secrets`, or `reporters` config — only `flows`
 
 ## Execution Engine — MCP-Only Browser Control
 
@@ -271,11 +407,13 @@ qagent/
 
 1. Read `qagent.json` or parse inline arguments
 2. Detect available MCP browser tools
-3. Generate test plan (Claude reasons about config + changelog)
-4. For each flow → dispatch `flow-executor` subagent
-5. Collect results → update plan
-6. Dispatch `reporter` subagent
-7. Save final plan to `qagent-plan-<timestamp>.json`
+3. Resolve all `secret:` references
+4. Generate test plan (Claude reasons about config + changelog)
+5. For each flow → dispatch `flow-executor` subagent
+6. Collect results → update plan
+7. If learning enabled → analyze failures, propose updates (mode-dependent)
+8. Dispatch `reporter` subagent
+9. Save final plan to `qagent-plan-<timestamp>.json`
 
 ### `/qagent:plan` — Plan only, no execution
 
@@ -381,7 +519,7 @@ If a step times out, it is marked `failed` with `severity: high` and observation
 Before any test execution, the plugin validates:
 1. **Browser availability** — at least one MCP browser server is reachable. If not → exit with clear error: "No browser MCP server available. Configure `browser.provider` in qagent.json or ensure Chrome DevTools MCP is connected."
 2. **App reachability** — HTTP HEAD request to app URL. If unreachable → exit with error: "App at {url} is not reachable." This is reported as an infrastructure error, not a test failure.
-3. **Env var resolution** — all `${VAR}` references in config are resolved. Missing vars → exit with error listing the unresolved variables.
+3. **Secret resolution** — all `secret:KEY` references are resolved from the configured provider (file or env). Missing secrets → exit with error listing the unresolved keys. Secret values are never logged or included in reports.
 4. **Config discovery** — plugin looks for `qagent.json` in: (1) path passed as argument, (2) current working directory, (3) nearest ancestor directory containing `.git`. First match wins.
 
 ### During execution
