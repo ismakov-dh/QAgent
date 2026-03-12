@@ -1,0 +1,55 @@
+{
+  "app": {
+    "name": "My Web App",
+    "url": "https://staging.example.com",
+    "description": "Brief description of what the app does and its main user flows"
+  },
+  "auth": {
+    "user": {
+      "username": "testuser@example.com",
+      "password": "secret:USER_PASSWORD"
+    },
+    "admin": {
+      "username": "admin@example.com",
+      "password": "secret:ADMIN_PASSWORD",
+      "cookie": ""
+    }
+  },
+  "secrets": {
+    "provider": "env",
+    "path": "/var/run/secrets/qagent"
+  },
+  "changelog": "Describe recent changes here. Each bug fix gets a regression test. Each new feature gets a smoke test.",
+  "flows": [
+    {
+      "name": "example-login-flow",
+      "role": "user",
+      "steps": [
+        { "action": "login" },
+        { "action": "verify", "expect": "dashboard is visible with welcome message" }
+      ]
+    }
+  ],
+  "browser": {
+    "provider": "chrome-devtools"
+  },
+  "reporters": [
+    { "type": "console" },
+    { "type": "json", "path": "./qagent-reports/" }
+  ],
+  "timeouts": {
+    "step": 30,
+    "flow": 300,
+    "session": 1800
+  },
+  "limits": {
+    "max_inferred_flows": 5
+  },
+  "inference": true,
+  "trigger": "auto",
+  "learning": {
+    "enabled": true,
+    "mode": "interactive",
+    "staging_path": "./qagent-proposed.json"
+  }
+}
