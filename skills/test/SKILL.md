@@ -238,19 +238,17 @@ Same as staging, but instead of writing a staging file:
 
 ## Phase 5: Cleanup & Reporting
 
-### 5.0 Close any remaining browser pages
+### 5.0 Close ALL browser pages
 
-Before reporting, ensure all QAgent-opened pages are closed:
+After all flows complete, close **every** open browser page — not just QAgent-created ones. The test run is done and the browser should be left clean.
 
 1. Call `list_pages` to get all open pages
-2. For each page that was opened by QAgent (pages in `qagent-flow-*` isolated contexts), call `close_page`
-3. Do NOT close pages that existed before QAgent started — only close pages we created
-4. If all pages would be closed (browser needs at least one), leave the last one on `about:blank`
+2. Close every page using `close_page`, starting from the last page and working backwards
+3. Since `close_page` cannot close the last remaining page, for the final page:
+   - Navigate it to `about:blank` first
+   - Then close it — if the MCP server still refuses, leave it on `about:blank`
 
-This handles edge cases where:
-- A flow-executor subagent crashed before the orchestrator could close the page
-- The session timed out and flows were skipped before cleanup
-- An error in Phase 3/4 caused early exit to Phase 5
+**This is mandatory.** Every test run must leave zero active pages behind. Leaked pages waste memory, hold network connections open, and can interfere with subsequent runs or the user's browser session.
 
 ### 5.1 Save the plan
 
