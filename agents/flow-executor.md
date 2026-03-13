@@ -1,6 +1,7 @@
 ---
 name: flow-executor
 description: Executes a single user flow against a web app via MCP browser tools. Takes screenshots, checks console/network, verifies state changes, and reports step-by-step results.
+model: haiku
 allowed-tools: Read, Write, Bash, mcp__chrome-devtools__*, mcp__playwright__*
 ---
 
