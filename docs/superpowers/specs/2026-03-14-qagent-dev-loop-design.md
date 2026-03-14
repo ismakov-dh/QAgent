@@ -26,7 +26,7 @@ Every flow in `qagent.json` gets optional metadata fields:
   "role": "user",
   "scope": "general",
   "branch": "feat/billing-redesign",
-  "discovered_by": "explore",
+  "discovered_by": "explore-session",
   "discovered_at": "2026-03-14T10:30:00Z",
   "steps": [...]
 }
@@ -36,10 +36,10 @@ Every flow in `qagent.json` gets optional metadata fields:
 |-------|------|--------|---------|---------|
 | `scope` | string | `"general"` \| `"feature"` | `"general"` | General flows apply everywhere. Feature flows are specific to the branch's work. |
 | `branch` | string | any | current branch | Which branch discovered this flow. |
-| `discovered_by` | string | `"config"` \| `"test"` \| `"explore"` | `"config"` | How the flow was added — manually written, discovered by test run, or discovered during brainstorming. |
+| `discovered_by` | string | `"manual"` \| `"test-run"` \| `"explore-session"` | `"manual"` | How the flow was added. `"manual"` = written by hand in config, `"test-run"` = discovered by `/qagent:test` learning loop, `"explore-session"` = discovered during `/qagent:explore`. Distinct from the plan's `source` field which tracks `"config"` vs `"inferred"` at runtime. |
 | `discovered_at` | string | ISO 8601 timestamp | null | When the flow was discovered. Null for manually written flows. |
 
-**Backward compatibility:** Existing flows without metadata are treated as `scope: "general"`, `discovered_by: "config"`. Nothing breaks.
+**Backward compatibility:** Existing flows without metadata are treated as `scope: "general"`, `discovered_by: "manual"`. Nothing breaks.
 
 ## Changelog Auto-Detection
 
@@ -78,9 +78,11 @@ The `changelog` config field supports three shapes:
 
 | Type | Resolution |
 |------|-----------|
-| `git` | Find merge-base with default branch (`git merge-base HEAD main`). Collect commit messages (`git log --oneline {base}..HEAD`) and changed files (`git diff --name-only {base}..HEAD`). If on main with no merge base, use last 5 commits. |
-| `url` | HTTP GET the URL, use response body as changelog text. Useful for backend services that publish release notes. |
+| `git` | Detect the default branch: try `git symbolic-ref refs/remotes/origin/HEAD` (strip prefix), fall back to `main`, then `master`. If none exist, error: "Could not determine default branch. Set it explicitly in changelog sources or run `git remote set-head origin --auto`." Find merge-base: `git merge-base HEAD {default-branch}`. Collect commit messages (`git log --oneline {base}..HEAD`) and changed files (`git diff --name-only {base}..HEAD`). If on the default branch with no merge base, use last 5 commits. The `path` is resolved relative to the directory containing `qagent.json`, not CWD. |
+| `url` | HTTP GET the URL, use response body as changelog text. If the request fails (timeout, non-2xx, network error), log a warning with the error and skip this source. Never let a flaky URL block execution. |
 | `text` | Inline text, used as-is. |
+
+**Error handling:** If ALL sources fail or produce empty results, proceed with an empty changelog and warn: "No changelog available — flow inference will be limited to config flows only."
 
 ### Priority
 
@@ -113,6 +115,14 @@ This combined changelog drives flow inference — QAgent sees both frontend and 
 ### Purpose
 
 Collaborative free-roaming browser exploration to discover test cases. The agent and operator take turns driving the browser. The agent observes the app like a QA tester and proposes test cases based on what it sees.
+
+### Allowed tools
+
+```yaml
+allowed-tools: Read, Write, Bash, Grep, Glob, mcp__chrome-devtools__*, mcp__playwright__*
+```
+
+Note: No `Agent` tool — explore runs as a direct conversation, not via subagents. The skill uses whichever browser MCP tools are available — not all listed namespaces need to be present. If only Chrome DevTools is available, Playwright tools are simply not used (and vice versa).
 
 ### Invocation
 
@@ -158,7 +168,7 @@ Same as `/qagent:test` Phase 1, minus trigger detection (explore is always inter
    Add this? [y/n/edit]
    ```
 6. If accepted, the flow is queued with metadata:
-   - `discovered_by: "explore"`
+   - `discovered_by: "explore-session"`
    - `branch`: current git branch
    - `scope`: as proposed (operator can change via `edit`)
    - `discovered_at`: ISO timestamp
@@ -168,8 +178,8 @@ Same as `/qagent:test` Phase 1, minus trigger detection (explore is always inter
 
 - **Observe actively** — after every page load, look for: missing validation, broken states, empty states, error handling gaps, edge cases (special characters, long strings, rapid clicks), accessibility issues
 - **Think like a QA tester** — "what could go wrong here?" for every interactive element
-- **Don't overwhelm** — max 2 proposals between operator interactions. Queue observations and present the best ones.
-- **Screenshot every significant state** — save to `qagent-reports/explore/` for reference
+- **Don't overwhelm** — max 2 proposals between operator interactions. Queue excess observations and present them when the operator asks "what else did you notice?" or during the wrap-up summary.
+- **Screenshot every significant state** — save to `qagent-reports/screenshots/explore-{timestamp}-{n}.png` (same directory as test screenshots, prefixed for identification)
 - **Context awareness** — remember what's been explored in this session. Don't re-propose the same area or similar test cases.
 
 ### Wrap up
@@ -187,6 +197,14 @@ When the operator says "done", "wrap up", "that's enough", or similar:
 4. **Write** accepted flows to `qagent.json` with full metadata
 5. **Close** the browser page
 
+### Session timeout
+
+Explore sessions use `timeouts.session` from config (default 30m). At 5 minutes before the limit, warn: "Session timeout approaching — wrap up or extend?" If the operator doesn't respond, auto-wrap-up at the limit (save all queued cases, close browser).
+
+### Flow name uniqueness
+
+When writing a discovered flow, check for name collisions with existing flows in `qagent.json`. If a collision is found, ask the operator to rename: "A flow named '{name}' already exists. Rename this one? [suggest: '{name}-2']"
+
 ### What it does NOT do
 
 - Does not execute existing flows — that's `/qagent:test`
@@ -200,13 +218,28 @@ When the operator says "done", "wrap up", "that's enough", or similar:
 
 Merge discovered test cases from a feature branch into a target branch's `qagent.json`. Handles deduplication, scope classification, and interactive approval.
 
+### Allowed tools
+
+```yaml
+allowed-tools: Read, Write, Bash, Grep, Glob
+```
+
+No browser tools — merge is a config-only operation.
+
 ### Invocation
 
 ```
 /qagent:merge [target-branch]
 ```
 
-Default target is `main`.
+Default target: detect via `git symbolic-ref refs/remotes/origin/HEAD`, fall back to `main`, then `master`.
+
+### Pre-checks
+
+Before starting:
+
+1. **Dirty working tree:** If `qagent.json` has uncommitted changes, warn: "qagent.json has uncommitted changes. Continue anyway? [y/n]". This prevents the merge from overwriting in-progress edits.
+2. **No discovered flows:** If no flows match the current branch (see step 1 below), inform: "No test cases discovered on this branch. Nothing to merge." and exit.
 
 ### Process
 
@@ -214,16 +247,16 @@ Default target is `main`.
 
 Read `qagent.json` from the current branch. Filter flows that have `branch` metadata matching the current branch — these are flows discovered during this branch's development.
 
-If no flows have `branch` metadata matching, check for flows with `discovered_at` timestamps after the branch creation date as a fallback.
+If no flows have `branch` metadata matching, use a fallback: find the merge-base commit date (`git log -1 --format=%cI $(git merge-base HEAD {target})`) and check for flows with `discovered_at` timestamps after that date.
 
 #### 2. Read target flows
 
-Load the target branch's `qagent.json`:
-```bash
-git show {target-branch}:qagent.json
-```
+Load the target branch's `qagent.json`. Try in order:
+1. `git show {target-branch}:qagent.json`
+2. `git show origin/{target-branch}:qagent.json` (if local branch not available)
+3. If both fail, treat target as having an empty flows array and inform the user.
 
-If the file doesn't exist on the target branch, treat it as an empty flows array.
+Also check: if `qagent.json` has non-flow changes compared to the target (e.g., `app.url`, `reporters` differ), warn: "qagent.json has config changes beyond flows (app, reporters, etc.). These will be included when the branch merges. Review them separately."
 
 #### 3. Classify
 
@@ -239,7 +272,7 @@ For each discovered flow:
 Compare each flow proposed for merge against the target's existing flows:
 
 - **Same `name`** → skip, already exists. Inform: "'{name}' already exists in {target}, skipping."
-- **Different name but similar steps** (overlapping intents, >70% step similarity by intent text) → flag: "'{name}' looks similar to existing '{existing-name}'. Replace / Skip / Add both?"
+- **Semantic similarity** — Claude judges whether two flows test the same behavior by comparing their step intents and overall purpose. If a discovered flow appears to duplicate an existing flow (same user journey, same verifications, even if named differently), flag it: "'{name}' appears to test the same behavior as existing '{existing-name}'. Replace / Skip / Add both?" This is a judgment call, not a mechanical threshold.
 
 #### 5. Present merge plan
 
@@ -268,7 +301,7 @@ Write the merged flows into `qagent.json`. Two modes depending on workflow:
 
 #### 7. Clean up metadata
 
-Merged flows get their metadata updated:
+Merged flows get their metadata updated (regardless of whether writing on feature branch or target branch):
 - `branch` → cleared (they now belong to the target branch)
 - `discovered_by` → preserved for history
 - `discovered_at` → preserved for history
@@ -291,9 +324,10 @@ Three additions:
 
 2. **Flow metadata on discovery** (Phase 3.4 learning loop + Phase 4 CI learning): Every discovered flow gets metadata:
    - `scope` — ask the user in interactive mode; default `"general"` in CI
-   - `branch` — current git branch
-   - `discovered_by` — `"test"`
+   - `branch` — current git branch (`git branch --show-current`)
+   - `discovered_by` — `"test-run"`
    - `discovered_at` — ISO timestamp
+   - Check for flow name uniqueness before writing (same as explore skill)
 
 3. **CI auto-changelog**: In CI, the pipeline doesn't need to pass changelog manually. QAgent detects it's on a branch, diffs against main, and builds the changelog. For cross-repo changelogs, configure `changelog.sources` in `qagent.json`.
 
@@ -325,7 +359,7 @@ New/changed fields in `qagent.json`:
       "role": "user",
       "scope": "general",
       "branch": "feat/billing",
-      "discovered_by": "explore",
+      "discovered_by": "explore-session",
       "discovered_at": "2026-03-14T10:30:00Z",
       "steps": [...]
     }
