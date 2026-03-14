@@ -33,6 +33,16 @@
   "browser": {
     "provider": "chrome-devtools"
   },
+  "execution": {
+    "strategy": "auto",
+    "concurrency": 3
+  },
+  "checks": {
+    "console": true,
+    "network": true,
+    "screenshotOnPass": false,
+    "screenshotOnFail": true
+  },
   "reporters": [
     { "type": "console" },
     { "type": "json", "path": "./qagent-reports/" }

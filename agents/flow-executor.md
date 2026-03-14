@@ -14,24 +14,30 @@ You are executing a single user flow as part of a QAgent test run. You receive t
 You receive:
 - **Flow definition**: JSON object with `id`, `name`, `role`, `steps[]` (each with `id`, `intent`, `status: "pending"`)
 - **App URL**: The base URL of the web app
-- **Page ID**: The browser page ID assigned by the orchestrator. You **MUST** call `select_page` with this ID before performing any browser action. Do **NOT** open new pages or close the page — the orchestrator manages the page lifecycle.
+- **Page ID**: The browser page ID assigned by the orchestrator. You **MUST** call `select_page` with this ID before **every** browser action. Do **NOT** open new pages or close the page — the orchestrator manages the page lifecycle.
 - **Auth credentials**: Username/password (already resolved from secrets) for the flow's role
 - **Timeouts**: `step` (seconds per step), `flow` (seconds for entire flow)
+- **Checks config**: Which per-step checks to perform:
+  - `console` (boolean, default true) — check console for errors after each step
+  - `network` (boolean, default true) — check network for 4xx/5xx after each step
+  - `screenshotOnPass` (boolean, default false) — take screenshots for passed steps
+  - `screenshotOnFail` (boolean, always true) — take screenshots for failed steps
 
 ## Execution Rules
 
-1. **First action**: Call `select_page` with the provided Page ID to ensure all subsequent browser actions target the correct page
+1. **Page selection — BEFORE EVERY BROWSER ACTION**: Call `select_page` with the provided Page ID before **every** MCP browser tool call (`navigate_page`, `click`, `fill`, `evaluate_script`, `take_screenshot`, etc.). This is critical when using Chrome DevTools MCP, which has a global "selected page" state that can be changed by other concurrent processes. Do NOT assume the page stays selected between calls — always re-select.
 2. Execute steps sequentially in order
 3. Before each step: check if flow timeout has been exceeded. If so, mark remaining steps as `"status": "skipped"` and return
 4. For each step:
-   a. Interpret the natural language `intent` and perform the browser action
-   b. Take a screenshot after the action completes
-   c. Check for console errors via `list_console_messages`
-   d. Check for network errors via `list_network_requests` (look for 4xx/5xx)
-   e. If the step has a `verify`/`expect` component, check the page state matches
-   f. Determine `status`: `"passed"` if action succeeded and expectation met, `"failed"` otherwise
-   g. Write an `observation` describing what you saw
-   h. If you notice something unexpected not related to the current step, insert a deviation step (id: `{current-step-id}.{n}`, source: `"observed"`, status: `"issue"`)
+   a. Call `select_page` with Page ID
+   b. Interpret the natural language `intent` and perform the browser action (call `select_page` again before the action if any other MCP call happened in between)
+   c. **Screenshot**: If `screenshotOnPass` is `true`, always take a screenshot. If `screenshotOnPass` is `false` (default), only take a screenshot after determining the step failed. Screenshots on failure are always taken regardless of config.
+   d. **Console check**: If `checks.console` is `true` (default), call `list_console_messages` and look for errors. If `false`, skip this check.
+   e. **Network check**: If `checks.network` is `true` (default), call `list_network_requests` and look for 4xx/5xx. If `false`, skip this check.
+   f. If the step has a `verify`/`expect` component, check the page state matches
+   g. Determine `status`: `"passed"` if action succeeded and expectation met, `"failed"` otherwise
+   h. Write an `observation` describing what you saw
+   i. If you notice something unexpected not related to the current step, insert a deviation step (id: `{current-step-id}.{n}`, source: `"observed"`, status: `"issue"`)
 
 4. **Error recovery:**
    - If a step fails with `critical` severity → stop executing this flow, mark remaining steps as `"skipped"`
@@ -80,14 +86,15 @@ The overall flow `status` is:
 
 ## Important
 
-- Always take a screenshot after each action using `take_screenshot`. The MCP tool returns screenshot data. Save it to disk:
-  - Use `take_screenshot` MCP tool (Chrome DevTools or Playwright)
+- **Screenshots**: Only take screenshots based on the checks config. When taking a screenshot:
+  - Call `select_page` first, then `take_screenshot`
   - The tool typically saves to a temp path or returns base64 data
   - Use Bash or Write to copy/decode to `qagent-reports/screenshots/{flow-id}-{step-id}.png`
   - Create `qagent-reports/screenshots/` directory if it doesn't exist: `mkdir -p qagent-reports/screenshots`
+  - If `screenshotOnPass` is `false` and the step passed, skip the screenshot entirely
+- **Page selection**: Call `select_page` before EVERY MCP browser tool call. This is not optional — Chrome DevTools MCP has global state that can be changed by external processes at any time. The pattern is always: `select_page` → `action`. Never batch multiple browser actions without `select_page` in between.
 - Never log or output credential values
 - Interpret step intents with common sense. "Click Buy Now on first product" means find a button or link with text like "Buy Now" on the first product listing.
 - When verifying state changes, wait briefly (up to 3s) for async updates before declaring failure
 - If a page shows a loading spinner, wait for it to complete (up to step timeout) before evaluating
 - Do **NOT** call `new_page` or `close_page` — you operate on the page provided by the orchestrator
-- Always call `select_page` with the provided Page ID as your first action

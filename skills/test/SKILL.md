@@ -101,9 +101,25 @@ Generate the test plan following the same logic as the `/qagent:plan` skill:
 
 ## Phase 3: Flow Execution
 
-For each flow in the plan, sequentially:
+### 3.0 Choose execution strategy
 
-**Before starting each flow, check if the session timeout has been exceeded. If so, mark all remaining flows as `"skipped"` and proceed to Phase 5.**
+The execution strategy depends on the detected browser provider:
+
+| Browser | Strategy | Why |
+|---------|----------|-----|
+| `chrome-devtools` | **Sequential** | Chrome DevTools MCP has a global "selected page" state. Only one page can be active at a time. Concurrent subagents would fight over `select_page`, causing actions to target the wrong page. |
+| `playwright` | **Parallel** (up to `execution.concurrency`, default 3) | Playwright MCP addresses pages per-call — no shared global state. Multiple subagents can safely operate on different pages simultaneously. |
+
+The strategy can be overridden via config `execution.strategy` (`"sequential"` or `"parallel"`) and `execution.concurrency` (number, default 3, max 10). If `execution.strategy` is explicitly set, use it regardless of browser provider — but **warn** if `"parallel"` is used with `chrome-devtools`:
+```
+⚠ Warning: Parallel execution with Chrome DevTools MCP may cause context mixing.
+  Flows may interfere with each other. Use Playwright MCP for reliable parallel execution.
+```
+
+Output the chosen strategy:
+```
+Execution: {sequential|parallel} ({reason})
+```
 
 ### 3.1 Open a dedicated browser page
 
@@ -133,6 +149,15 @@ Use the Agent tool to dispatch the `flow-executor` subagent. Provide it with:
 - Resolved auth credentials for the flow's role (username + password, already resolved from secrets)
 - Timeouts from config (`timeouts.step` default 30s, `timeouts.flow` default 300s)
 - Which MCP browser tools are available (detected in Phase 1.4)
+- **Checks config** — which per-step checks to perform (see below)
+
+**Checks config** (from `checks` in qagent.json, with defaults):
+| Check | Default | Effect |
+|-------|---------|--------|
+| `checks.console` | `true` | Call `list_console_messages` after each step |
+| `checks.network` | `true` | Call `list_network_requests` after each step |
+| `checks.screenshotOnPass` | `false` | If `false`, only take screenshots on failed steps (saves ~1s per passed step). If `true`, screenshot every step. |
+| `checks.screenshotOnFail` | `true` | Always take screenshots on failed steps. Cannot be disabled. |
 
 Example Agent dispatch:
 ```
@@ -144,9 +169,30 @@ Page ID: {pageId} — call select_page with this ID before any browser action
 Auth: username={username}, password={password}
 Timeouts: step={step_timeout}s, flow={flow_timeout}s
 Browser: {chrome-devtools|playwright} MCP tools available
+Checks: console={true|false}, network={true|false}, screenshotOnPass={true|false}
 
 Follow the flow-executor instructions exactly. Return the updated flow JSON with all step results."
 ```
+
+**Sequential execution** (chrome-devtools default):
+
+For each flow in the plan, one at a time:
+1. Check session timeout — if exceeded, mark remaining flows as `"skipped"` and proceed to Phase 5
+2. Open page (3.1)
+3. Dispatch flow-executor subagent and **wait for it to complete**
+4. Collect results and close page (3.3)
+5. Run learning loop if applicable (3.4)
+6. Move to next flow
+
+**Parallel execution** (playwright default):
+
+1. Open pages for up to `execution.concurrency` flows at once (3.1 for each)
+2. Dispatch all flow-executor subagents in parallel using multiple Agent tool calls in a single message
+3. As each subagent completes, collect results and close its page (3.3)
+4. When a slot frees up, start the next pending flow (if any and session timeout not exceeded)
+5. After all flows complete, run learning loop (3.4) on all failures
+
+**Important**: In parallel mode, the orchestrator opens all pages and dispatches all subagents before any complete. Each subagent operates on its own page independently. The orchestrator collects results as they arrive.
 
 ### 3.3 Collect results and close the page
 
@@ -170,6 +216,8 @@ Update the plan with the results. Track:
 ### 3.4 Learning (interactive mode)
 
 If learning is enabled (default: `true` — learning is on unless `learning.enabled` is explicitly `false` or the `learning` block is absent from config) and the trigger is `"manual"` (interactive mode):
+
+#### 3.4.1 Learn from failures
 
 For each failed step in this flow, immediately:
 1. Gather additional context from the failure: the screenshot, console errors, network state, DOM around the failing element
@@ -196,18 +244,52 @@ For each failed step in this flow, immediately:
 6. If accepted, queue the change for writing to `qagent.json` at the end
 7. Continue to the next flow
 
-After all flows complete, apply all accepted proposals:
+#### 3.4.2 Persist discovered test cases
+
+After all flows complete, review all **inferred flows** (those with `source: "inferred"`) that were generated in Phase 2. These flows exist only in the current plan — they will be lost unless persisted to `qagent.json`.
+
+For each inferred flow, propose it for permanent addition to the config:
+
+```
+Discovered test case: "{flow-name}" ({passed|failed})
+  Source: inferred from changelog — "{reasoning}"
+  Steps: {step count} steps
+  Result: {pass/fail summary}
+
+Add this test case to qagent.json for future runs? [y/n/edit]
+```
+
+- **If the flow passed**: propose adding it as-is — it proved valuable and should run in future
+- **If the flow failed**: propose adding it with any adjustments learned from the failure (combine with 3.4.1 proposals if applicable)
+- **If the user selects `edit`**: let them modify the flow definition before accepting
+- **If rejected**: the flow stays only in the plan report, not persisted
+
+This ensures the test suite grows over time. Each run discovers new cases from the changelog, and the good ones get locked into the config permanently.
+
+#### 3.4.3 Apply accepted proposals
+
+After all proposals have been reviewed (both failure-based and discovery-based), apply all accepted ones:
 - Read current `qagent.json`
 - Modify only the `flows` array (never touch `app`, `auth`, `secrets`, `reporters`, or other config)
 - Write the updated `qagent.json`
+- Output summary: "Persisted {N} test cases to qagent.json ({M} new, {K} updated)"
 
 ## Phase 4: Learning (CI modes)
 
 If `learning.enabled` is true and trigger is `"ci"`:
 
+Collect **two types** of proposals:
+1. **Failure-based**: from failed steps — updates to existing flows or new flows to cover edge cases
+2. **Discovery-based**: inferred flows (source: `"inferred"`) that should be persisted to `qagent.json` for future runs
+
+Each proposal has a `type` field:
+- `"update-flow"` — modify an existing config flow (failure-based)
+- `"new-flow"` — add a new flow discovered from changelog/failures
+- `"persist-inferred"` — promote an inferred flow to a permanent config flow
+
 ### staging mode (default for CI)
 
-Collect all proposals from all failed flows. Write them to the staging file:
+Collect all proposals and write them to the staging file:
 ```json
 {
   "generated_at": "<ISO timestamp>",
@@ -215,9 +297,10 @@ Collect all proposals from all failed flows. Write them to the staging file:
   "proposals": [
     {
       "id": "p1",
-      "type": "update-flow | new-flow",
+      "type": "update-flow | new-flow | persist-inferred",
       "flow": "<flow name being updated, or null for new>",
       "reason": "<why this change is proposed>",
+      "result": "<passed | failed — for persist-inferred proposals>",
       "diff": {
         "before": "<original step or null>",
         "after": "<updated step(s) or new flow definition>"
@@ -228,13 +311,15 @@ Collect all proposals from all failed flows. Write them to the staging file:
 ```
 Save to the path configured in `learning.staging_path` (default: `./qagent-proposed.json`).
 
+Output: "Wrote {N} proposals to {staging_path} ({M} from failures, {K} discovered test cases). Review and apply with `/qagent:test --apply-proposals`."
+
 ### auto-accept mode
 
 Same as staging, but instead of writing a staging file:
 1. Apply each proposal directly to `qagent.json`
 2. Cap at 10 proposals per run (prevents runaway generation)
 3. Proposals only modify `flows` — never `app`, `auth`, `secrets`, or `reporters`
-4. After applying, output: "Auto-accepted {N} proposals. Updated qagent.json."
+4. After applying, output: "Auto-accepted {N} proposals ({M} from failures, {K} discovered test cases). Updated qagent.json."
 
 ## Phase 5: Cleanup & Reporting
 
@@ -301,7 +386,7 @@ If a flow exceeds its timeout, mark remaining steps as `"status": "skipped"` and
 
 - **NEVER** log or output secret values — not in console, not in reports, not anywhere
 - **NEVER** include credentials in screenshots or reports
-- Always take screenshots — they are the primary evidence for pass/fail decisions
+- Screenshots are controlled by `checks.screenshotOnPass` (default `false`) and `checks.screenshotOnFail` (always `true`). Failed steps always get screenshots — they are the primary evidence for debugging.
 - When verifying state changes, wait briefly (up to 3s) for async updates before declaring failure
 - If a page shows a loading spinner, wait for it to complete before evaluating
 - Each flow gets its own isolated browser page — **always close it** when the flow completes (pass or fail)
