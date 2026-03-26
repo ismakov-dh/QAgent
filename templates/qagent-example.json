@@ -19,11 +19,17 @@
     "provider": "env",
     "path": "/var/run/secrets/qagent"
   },
-  "changelog": "Describe recent changes here. Each bug fix gets a regression test. Each new feature gets a smoke test.",
+  "changelog": {
+    "sources": [
+      { "type": "git", "path": "." },
+      { "type": "git", "path": "../backend" }
+    ]
+  },
   "flows": [
     {
       "name": "example-login-flow",
       "role": "user",
+      "scope": "general",
       "steps": [
         { "action": "login" },
         { "action": "verify", "expect": "dashboard is visible with welcome message" }
