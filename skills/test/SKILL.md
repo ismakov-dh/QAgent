@@ -76,13 +76,56 @@ QAgent Error: App at {url} is not reachable (HTTP {code}).
 ```
 Exit with code 2. This is an infrastructure error, not a test failure.
 
+### 1.6 Resolve changelog
+
+The `changelog` field drives flow inference in Phase 2. Resolve it based on its shape:
+
+**If `changelog` is a string:** Use as-is (backward compatible).
+
+**If `changelog` is an object with `sources`:** Resolve each source:
+
+For each source in `changelog.sources`:
+- **`type: "git"`**: Detect the default branch: run `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'`. If that fails, try `main`, then `master` (check with `git rev-parse --verify {branch} 2>/dev/null`). If none exist, output error: "Could not determine default branch. Set it explicitly or run `git remote set-head origin --auto`." and exit with code 2.
+
+  Find merge base: `git merge-base HEAD {default-branch}`. Collect commits and changed files:
+  ```bash
+  # Resolve path relative to qagent.json directory, not CWD
+  cd "{qagent_json_dir}/{source.path}"
+  BASE=$(git merge-base HEAD {default-branch})
+  git log --oneline $BASE..HEAD
+  git diff --name-only $BASE..HEAD
+  ```
+  If on the default branch with no merge base, use: `git log --oneline -5`
+
+  Format as:
+  ```
+  [git: {path}]
+  Commits since {default-branch}:
+  - {commit lines}
+  Changed files: {file list}
+  ```
+
+- **`type: "url"`**: Fetch with `curl -s -m 10 "{url}"`. If the request fails (non-2xx or timeout), log warning: "Changelog source {url} failed ({reason}), skipping." and continue to the next source. Format as:
+  ```
+  [url: {url}]
+  {response body}
+  ```
+
+- **`type: "text"`**: Use `content` as-is.
+
+Combine all resolved sources into one changelog string, separated by blank lines.
+
+**If `changelog` is omitted entirely:** Default to a single git source for the current repo (same as `type: "git"` with `path: "."`).
+
+**Error handling:** If ALL sources fail or produce empty results, warn: "No changelog available — flow inference will be limited to config flows only." and proceed with an empty changelog string.
+
 ## Phase 2: Plan Generation
 
 Generate the test plan following the same logic as the `/qagent:plan` skill:
 
 1. Convert config flows to plan flows (`source: "config"`). For each flow in config, assign sequential IDs (`flow-1`, `flow-2`, ...). For each step, convert the `action`/`target`/`expect` fields into a natural language `intent` and assign step IDs (`s1`, `s2`, ...). All steps start as `status: "pending"`.
 
-2. If inference is enabled (config `inference` is not `false`), generate inferred flows from the changelog:
+2. If inference is enabled (config `inference` is not `false`), generate inferred flows from the resolved changelog (from Phase 1.6):
    - For each bug fix mentioned → generate 1 regression test flow
    - For each new feature mentioned → generate 1 smoke test flow
    - Cap at `limits.max_inferred_flows` (default 5)
