@@ -25,6 +25,16 @@ Arguments: `$ARGUMENTS`
    - If inline args: `$1` = app URL, `$2` = changelog text
    - If config file: read and parse the full JSON
 
+   **Resolve changelog:**
+   - If `changelog` is a string → use as-is
+   - If `changelog` is an object with `sources` → resolve each source:
+     - `type: "git"` → detect default branch (`git symbolic-ref refs/remotes/origin/HEAD`, fall back to `main`/`master`). If none exist, error and exit. Find merge-base, collect commits + changed files. Path is relative to `qagent.json` directory, not CWD.
+     - `type: "url"` → `curl -s -m 10 "{url}"`. If fails, log warning and skip.
+     - `type: "text"` → use `content` as-is.
+   - If `changelog` is omitted → default to git auto-detect from current repo
+   - If all sources fail → warn "No changelog available — flow inference will be limited to config flows only" and use empty string
+   - Combine all sources into one changelog string for plan generation
+
 2. **Validate secrets**
    - Find all `secret:KEY` references in the config
    - Check the configured secrets provider:
@@ -56,7 +66,7 @@ Arguments: `$ARGUMENTS`
    **Config flows:** For each flow in `qagent.json` → `flows[]`, add it to the plan with `source: "config"`, converting each step's `action`/`target`/`expect` into a natural language `intent`. Assign sequential IDs (`flow-1`, `flow-2`, ...) and step IDs (`s1`, `s2`, ...).
 
    **Inferred flows** (if `inference` is not `false`):
-   - Parse the changelog for bug fixes → generate 1 regression test flow per fix
+   - Parse the resolved changelog for bug fixes → generate 1 regression test flow per fix
    - Parse the changelog for new features → generate 1 smoke test flow per feature
    - Cap at `limits.max_inferred_flows` (default 5)
    - Each inferred flow must include `reasoning` explaining why it was generated
