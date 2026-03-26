@@ -268,6 +268,13 @@ For each failed step in this flow, immediately:
 3. Propose one or more changes:
    - **Update existing flow**: modify steps to handle the failure better (e.g., add waits, change selectors)
    - **New flow**: add a new test case to cover an edge case discovered by the failure
+
+Every proposed **new flow** must include metadata:
+- `scope` — ask the user: "Is this test case general (applies everywhere) or specific to this feature branch? [general/feature]". Default to `"general"` if unclear.
+- `branch` — current git branch (run `git branch --show-current`)
+- `discovered_by` — `"test-run"` (distinct from the plan's runtime `source` field which tracks `"config"` vs `"inferred"`)
+- `discovered_at` — current ISO timestamp
+
 4. Present each proposal to the user clearly:
    ```
    ✗ Step "{step intent}" FAILED
@@ -298,6 +305,7 @@ Discovered test case: "{flow-name}" ({passed|failed})
   Source: inferred from changelog — "{reasoning}"
   Steps: {step count} steps
   Result: {pass/fail summary}
+  Scope: general (change? [general/feature])
 
 Add this test case to qagent.json for future runs? [y/n/edit]
 ```
@@ -307,12 +315,19 @@ Add this test case to qagent.json for future runs? [y/n/edit]
 - **If the user selects `edit`**: let them modify the flow definition before accepting
 - **If rejected**: the flow stays only in the plan report, not persisted
 
+If accepted, write with metadata:
+- `scope` — as confirmed by user (default `"general"`)
+- `branch` — current git branch
+- `discovered_by` — `"test-run"`
+- `discovered_at` — current ISO timestamp
+
 This ensures the test suite grows over time. Each run discovers new cases from the changelog, and the good ones get locked into the config permanently.
 
 #### 3.4.3 Apply accepted proposals
 
 After all proposals have been reviewed (both failure-based and discovery-based), apply all accepted ones:
 - Read current `qagent.json`
+- Before writing each new flow, check for name collisions with existing flows. If a collision is found, ask the user to rename: "A flow named '{name}' already exists. Rename this one? [suggest: '{name}-2']". Wait for the user's response.
 - Modify only the `flows` array (never touch `app`, `auth`, `secrets`, `reporters`, or other config)
 - Write the updated `qagent.json`
 - Output summary: "Persisted {N} test cases to qagent.json ({M} new, {K} updated)"
@@ -329,6 +344,12 @@ Each proposal has a `type` field:
 - `"update-flow"` — modify an existing config flow (failure-based)
 - `"new-flow"` — add a new flow discovered from changelog/failures
 - `"persist-inferred"` — promote an inferred flow to a permanent config flow
+
+In CI mode, all discovered flows get metadata defaults (no interactive prompt):
+- `scope` — `"general"`
+- `branch` — current git branch (`git branch --show-current`)
+- `discovered_by` — `"test-run"`
+- `discovered_at` — current ISO timestamp
 
 ### staging mode (default for CI)
 
