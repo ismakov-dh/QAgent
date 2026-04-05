@@ -10,7 +10,7 @@ In Claude Code, run:
 
 ```
 /plugin marketplace add ismakov-dh/QAgent
-/plugin install qagent@ismakov-dh-QAgent
+/plugin install qagent@qagent
 ```
 
 Or for local development/testing:
