@@ -32,11 +32,13 @@ QAgent needs a browser to work. You need at least one of these:
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["@anthropic-ai/playwright-mcp"]
+      "args": ["@playwright/mcp@latest"]
     }
   }
 }
 ```
+
+Uses [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp).
 
 ## Quick start
 
