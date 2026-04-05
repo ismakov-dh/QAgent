@@ -6,9 +6,17 @@ A [Claude Code](https://claude.ai/claude-code) plugin.
 
 ## Install
 
-```bash
+In Claude Code, run:
+
+```
 /plugin marketplace add ismakov-dh/QAgent
-/plugin install qagent@QAgent
+/plugin install qagent@ismakov-dh-QAgent
+```
+
+Or for local development/testing:
+
+```bash
+claude --plugin-dir /path/to/QAgent
 ```
 
 ### Browser MCP server
