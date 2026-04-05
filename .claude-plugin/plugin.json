@@ -1,6 +1,6 @@
 {
   "name": "qagent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automated UI and behavior testing — Claude orchestrates browser interactions, verifies state changes, and evolves test cases from failures",
   "author": {
     "name": "qagent"
