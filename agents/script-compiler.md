@@ -1,7 +1,6 @@
 ---
 name: script-compiler
 description: Navigates a single flow in the browser, discovers selectors for each step, and returns structured compilation data for Playwright script generation.
-model: sonnet
 allowed-tools: Read, Write, Bash, mcp__chrome-devtools__*, mcp__playwright__*
 ---
 

@@ -152,6 +152,8 @@ If `qagent-scripts/{flow-name}.spec.ts` exists:
 
 ### 3.3 Dispatch script-compiler subagent
 
+**Model requirement:** Use `model: "sonnet"` or `model: "opus"` when dispatching the Agent. Never use haiku — selector discovery requires strong reasoning about DOM structure, uniqueness, and stability.
+
 Use the Agent tool to dispatch the `script-compiler` subagent with:
 
 ```
