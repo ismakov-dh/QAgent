@@ -11,3 +11,6 @@ qagent-proposed.json
 # QAgent compiled scripts (build artifacts)
 qagent-scripts/node_modules/
 qagent-scripts/test-results/
+
+# macOS
+.DS_Store
