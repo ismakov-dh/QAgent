@@ -72,11 +72,20 @@ Uses [Microsoft Playwright MCP](https://github.com/microsoft/playwright-mcp).
 
 QAgent will load the config, open a browser, execute each flow step by step, take screenshots, and report results.
 
+3. For faster runs, compile flows into Playwright scripts:
+
+```
+/qagent:compile
+```
+
+This navigates each flow once (LLM-driven), discovers real selectors, and generates `.spec.ts` files in `qagent-scripts/`. Subsequent `/qagent:test` runs execute these scripts directly — seconds instead of minutes.
+
 ## Skills
 
 | Skill | Purpose |
 |-------|---------|
-| `/qagent:test` | Run tests — execute flows, verify state changes, propose new test cases from failures |
+| `/qagent:test` | Run tests — compiled scripts (fast) or LLM-driven (flexible), with auto-fallback |
+| `/qagent:compile` | Compile flows into Playwright Test scripts — LLM discovers selectors once, scripts run in seconds |
 | `/qagent:plan` | Generate a test plan without executing — preview what will be tested |
 | `/qagent:explore` | Live brainstorming — open the app, explore interactively, discover test cases together |
 | `/qagent:merge` | Merge test cases from a feature branch into the main test suite |
@@ -87,9 +96,24 @@ QAgent will load the config, open a browser, execute each flow step by step, tak
 1. **Load config** — reads `qagent.json` for app URL, auth, flows, and settings
 2. **Resolve changelog** — auto-detects changes from git history (or manual input)
 3. **Generate plan** — config flows + inferred flows from changelog (regression tests for bug fixes, smoke tests for new features)
-4. **Execute flows** — opens isolated browser pages per flow, dispatches subagents to perform each step
-5. **Learn from failures** — proposes new/updated test cases based on what went wrong
-6. **Report** — console output + optional Slack, Telegram, or JSON reports
+4. **Check for compiled scripts** — if a flow has a matching `.spec.ts` file (hash check), run it via Playwright Test (fast path). Otherwise fall back to LLM-driven execution.
+5. **Execute flows** — compiled scripts run in parallel via Playwright Test workers; LLM flows open isolated browser pages per flow
+6. **Learn from failures** — proposes new/updated test cases based on what went wrong
+7. **Report** — console output + optional Slack, Telegram, or JSON reports
+
+## Compiled scripts
+
+`/qagent:compile` generates Playwright Test scripts from your flow definitions. The LLM navigates each flow once, discovers stable selectors (preferring `data-testid` > `role` > `text` > `id` > CSS), and writes `.spec.ts` files.
+
+```
+/qagent:compile                        # compile all flows
+/qagent:compile login-flow             # compile specific flow
+/qagent:compile --force                # recompile even if unchanged
+```
+
+Scripts are saved to `qagent-scripts/` and committed to git. When you edit a flow in `qagent.json`, `/qagent:test` detects the hash mismatch and asks to recompile. If a script fails at runtime, you're prompted to recompile or fall back to LLM.
+
+Credentials are never hardcoded — scripts use `process.env.QAGENT_AUTH_*` variables, set automatically from your config's resolved secrets at runtime.
 
 ## Auth & secrets
 
@@ -147,8 +171,11 @@ This deduplicates against main's test suite, asks about feature-scoped flows, an
 
 Set `trigger: "ci"` or rely on auto-detection (`CI=true` env var). In CI mode:
 
+- Compiled scripts run first (fast, parallel) — stale scripts run with warnings
+- Flows without scripts fall back to LLM execution automatically
 - Changelog auto-detected from git
 - Learning loop writes proposals to a staging file (or auto-accepts)
+- No auto-recompile — CI runs are deterministic
 - Exit code 0 = pass, 1 = test failure, 2 = infrastructure error
 
 ## Full config reference
