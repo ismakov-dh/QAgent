@@ -54,7 +54,8 @@ On first compile (no `qagent-scripts/` directory), generate scaffold files:
 {
   "private": true,
   "dependencies": {
-    "@playwright/test": "latest"
+    "@playwright/test": "latest",
+    "dotenv": "latest"
   }
 }
 ```
@@ -62,6 +63,9 @@ On first compile (no `qagent-scripts/` directory), generate scaffold files:
 **`qagent-scripts/playwright.config.ts`:**
 ```typescript
 import { defineConfig } from '@playwright/test';
+import { config } from 'dotenv';
+
+config();
 
 export default defineConfig({
   use: {

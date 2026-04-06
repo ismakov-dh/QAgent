@@ -65,7 +65,8 @@ Write `qagent-scripts/package.json`:
 {
   "private": true,
   "dependencies": {
-    "@playwright/test": "latest"
+    "@playwright/test": "latest",
+    "dotenv": "latest"
   }
 }
 ```
@@ -77,6 +78,9 @@ Only generate if `qagent-scripts/package.json` does not already exist.
 Write `qagent-scripts/playwright.config.ts`:
 ```typescript
 import { defineConfig } from '@playwright/test';
+import { config } from 'dotenv';
+
+config();
 
 export default defineConfig({
   use: {
