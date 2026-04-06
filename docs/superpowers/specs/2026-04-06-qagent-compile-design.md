@@ -71,6 +71,8 @@ export default defineConfig({
   },
   timeout: 30_000,
   retries: 0,
+  workers: 3,
+  fullyParallel: true,
   reporter: [['json', { outputFile: 'test-results/results.json' }]],
 });
 ```
@@ -359,6 +361,6 @@ qagent-scripts/test-results/
 
 - Auto-recompile in CI — CI runs should be deterministic
 - Visual regression in compiled scripts — scripts check functional behavior only
-- Parallel compilation — flows are compiled sequentially (shares one browser)
+- Parallel compilation — flows are compiled sequentially (LLM shares one browser). Execution is parallel via Playwright Test workers.
 - Script editing UI — users edit `.spec.ts` files directly if needed
 - Migration from existing Playwright projects — QAgent generates its own scripts
