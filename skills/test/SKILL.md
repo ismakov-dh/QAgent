@@ -164,6 +164,68 @@ Output the chosen strategy:
 Execution: {sequential|parallel} ({reason})
 ```
 
+### 3.0.5 Script check (compiled fast path)
+
+Before opening browser pages, check each flow for compiled Playwright Test scripts. Compiled scripts run via `npx playwright test` and are much faster than LLM-driven execution.
+
+For each flow in the plan:
+
+**1. Compute flow hash:**
+Serialize the flow's key fields: `JSON.stringify({name: flow.name, role: flow.role, steps: flow.steps})`. Hash with SHA-256, truncate to 8 hex chars.
+
+**2. Check for compiled script:**
+Look for `qagent-scripts/{flow-name}.spec.ts`. If it exists, read the first line and parse the `qagent-compiled` JSON comment to extract the stored hash.
+
+**3. Decide execution path:**
+
+| Script exists? | Hash match? | Trigger | Action |
+|---|---|---|---|
+| Yes | Yes | any | **Fast path** — run script via Playwright Test |
+| Yes | No | manual | Prompt: "Flow '{name}' has changed since last compile. Recompile / Run stale / LLM fallback?" |
+| Yes | No | ci | Run stale script, log warning: "⚠ Stale script for '{name}' — consider recompiling" |
+| No | — | manual | Prompt: "No compiled script for '{name}'. Compile now / LLM fallback?" |
+| No | — | ci | LLM fallback (no prompt) |
+
+**Fast path execution:**
+
+1. Set environment variables from resolved config:
+   - `QAGENT_APP_URL` — app URL
+   - `QAGENT_AUTH_{ROLE}_USERNAME` — for each auth role (role name uppercased)
+   - `QAGENT_AUTH_{ROLE}_PASSWORD` — for each auth role
+2. Run:
+   ```bash
+   cd qagent-scripts && QAGENT_APP_URL="{url}" QAGENT_AUTH_USER_USERNAME="{user}" QAGENT_AUTH_USER_PASSWORD="{pass}" npx playwright test {flow-name}.spec.ts --reporter=json
+   ```
+3. Parse `qagent-scripts/test-results/results.json`
+4. Map Playwright results to QAgent flow format:
+   - Playwright pass → flow `status: "passed"`, each test step → step `status: "passed"`
+   - Playwright fail → flow `status: "failed"`, include error message and screenshot path in `observation`
+5. Return the flow result to the plan
+
+**Script-executed flows skip the MCP browser page lifecycle (Phases 3.1/3.3).** Playwright Test manages its own browser. Only LLM-fallback flows need MCP pages.
+
+**Script failure in manual mode:**
+```
+Script for '{name}' failed:
+  {Playwright error message}
+
+Recompile this flow? [y/n]
+```
+- **y** → dispatch `script-compiler` subagent for this flow, regenerate `.spec.ts`, re-run via fast path
+- **n** → keep the failure result as-is
+
+**Script failure in CI mode:**
+Log the failure with Playwright error output. Include in the test report. No auto-recompile.
+
+**Recompile during test:**
+When the user chooses to recompile (hash mismatch or script failure):
+1. Dispatch `script-compiler` subagent for that single flow (same as `/qagent:compile` Phase 3.3)
+2. Write the new `.spec.ts` file
+3. Re-run the script via fast path
+4. Continue to next flow
+
+After all script checks are resolved, proceed to Phase 3.1 for any remaining LLM-fallback flows.
+
 ### 3.1 Open a dedicated browser page
 
 Each flow gets its own isolated browser page. This provides clean cookie/storage state without manual clearing.
