@@ -7,3 +7,7 @@ qagent-proposed.json
 # Secrets
 .env
 .env.*
+
+# QAgent compiled scripts (build artifacts)
+qagent-scripts/node_modules/
+qagent-scripts/test-results/
