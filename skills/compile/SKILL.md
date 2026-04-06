@@ -154,6 +154,8 @@ If `qagent-scripts/{flow-name}.spec.ts` exists:
 
 **Model requirement:** Use `model: "sonnet"` or `model: "opus"` when dispatching the Agent. Never use haiku — selector discovery requires strong reasoning about DOM structure, uniqueness, and stability.
 
+**Navigation requirement:** The subagent MUST navigate each flow step by step in the browser, taking screenshots and discovering selectors from the live DOM. Never batch-discover selectors from a single page load or guess selectors based on naming conventions.
+
 Use the Agent tool to dispatch the `script-compiler` subagent with:
 
 ```
@@ -248,7 +250,20 @@ Output on smoke-run failure after retries:
   {n}. {flow-name} ........... FAILED (smoke-run: {error description})
 ```
 
-### 3.7 Handle compilation failure
+### 3.7 Group dependent flows into serial specs
+
+After all flows are compiled, check for `depends_on` relationships between flows. If a set of flows forms a dependency chain (e.g., flow A → flow B → flow C), they must share state and run in order.
+
+For each dependency group:
+1. Merge the individual compiled steps into a single `.spec.ts` file named after the first flow in the chain
+2. Wrap all tests in a `test.describe.serial` block so Playwright runs them in order
+3. Declare shared `let` variables in the `describe` scope for state passed between flows (e.g., created entity IDs)
+4. For flows that require a different auth role, add explicit logout/login steps between tests
+5. Delete the individual `.spec.ts` files that were merged into the group
+
+Flows without `depends_on` remain as individual `.spec.ts` files (parallel-safe).
+
+### 3.8 Handle compilation failure
 
 If the subagent returns an error, the flow cannot be navigated, or the smoke-run fails after retries:
 
@@ -258,7 +273,7 @@ If the subagent returns an error, the flow cannot be navigated, or the smoke-run
 
 Do not generate a script file for this flow (delete any partial `.spec.ts`). It will use LLM fallback during `/qagent:test`.
 
-### 3.8 Close browser page
+### 3.9 Close browser page
 
 After each flow, close the browser page used by the subagent (same cleanup as `/qagent:test`).
 

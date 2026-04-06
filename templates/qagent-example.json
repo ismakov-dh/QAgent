@@ -34,6 +34,18 @@
         { "action": "login" },
         { "action": "verify", "expect": "dashboard is visible with welcome message" }
       ]
+    },
+    {
+      "name": "example-submit-flow",
+      "role": "user",
+      "scope": "general",
+      "depends_on": "example-login-flow",
+      "steps": [
+        { "action": "navigate", "target": "/submit" },
+        { "action": "fill", "field": "title", "value": "Test submission" },
+        { "action": "click", "target": "Submit" },
+        { "action": "verify", "expect": "success message is visible" }
+      ]
     }
   ],
   "browser": {

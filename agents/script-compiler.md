@@ -66,6 +66,83 @@ If a selector matches multiple elements:
 - Framework-internal attributes (`data-reactid`, `ng-`)
 - Guessed CSS class selectors — only use classes you see in the actual DOM
 
+### Common Selector Pitfalls
+
+These patterns cause the majority of strict mode failures in real apps. Check for each one during selector discovery.
+
+#### Duplicate text across page regions
+
+Text often appears in multiple DOM nodes — sidebar labels, role badges, pagination controls (top + bottom), status badges in both table cells and filter dropdowns, tab labels as both `<button>` and heading inside the panel. **Assume any visible text could appear more than once.**
+
+After finding a text-based selector, always validate the count. If >1, scope to the nearest unique container:
+```typescript
+// BAD — "Admin" appears in sidebar badge AND user profile
+page.getByText('Admin')
+
+// GOOD — scoped to specific region
+page.locator('nav').getByText('Admin')
+// or as last resort
+page.getByText('Admin', { exact: true }).first()
+```
+
+For pagination buttons (often duplicated top + bottom), always add `.first()`:
+```typescript
+page.getByRole('button', { name: '2', exact: true }).first().click()
+```
+
+#### Dual-render components (hidden native + visible custom)
+
+Many UI frameworks render form controls as BOTH a hidden native element (for form submission/accessibility) and a visible custom widget. For example, a dropdown may have:
+- A hidden `<select>` with `<option>` children (native)
+- A visible popover with `<div role="option">` items (custom)
+
+This means `getByText('Option')` matches both the hidden `<option>` and the visible `<span>`, causing strict mode failure. Even `getByRole('option')` matches both — Playwright detects the implicit ARIA role on native `<option>` elements.
+
+**Key distinction:** `getByRole('option')` matches **implicit** ARIA roles (native elements), while `locator('[role="option"]')` matches only **explicit** `role` HTML attributes (custom elements). Use the CSS attribute selector to target only the visible custom items:
+```typescript
+// Open the dropdown trigger
+page.locator('button[role="combobox"]').first().click()
+// Select an option — CSS attribute selector skips native <option> elements
+page.locator('[role="option"]').filter({ hasText: 'Option text' }).click()
+```
+
+When you open a dropdown and the items do NOT have `role="option"` (e.g., checkbox-style popover menus), fall back to:
+```typescript
+page.getByText('Item text', { exact: true }).click()
+page.keyboard.press('Escape')  // close popover
+```
+
+After opening any dropdown, inspect what role the items have (`role="option"`, `role="menuitemcheckbox"`, plain text) and choose the selector accordingly.
+
+#### Non-link, non-button clickable elements
+
+Cards, list items, and queue entries are often custom components — not `<a>` or `<button>`. Standard role-based selectors won't find them.
+
+Fallback chain:
+1. Check for `<a>` links: `page.locator('a[href*="/expected-path/"]')`
+2. If no links, find unique text content in each item (IDs, titles): `page.getByText(/^ITEM-\d+/).first()`
+3. If no unique text, use `data-testid` on the card container
+4. As last resort, use `page.evaluate()` to click via DOM query
+
+#### Disabled buttons with prerequisites
+
+Before generating a click action on a submit/finalize button, check if it is `disabled`. If disabled, there is likely a prerequisite action (e.g., a validation step, a required field, a pre-check button). Discover and add the prerequisite as a preceding step, then wait for the target button to become enabled:
+```typescript
+await page.getByRole('button', { name: 'Run validation' }).click();
+await expect(page.getByRole('button', { name: 'Submit' })).toBeEnabled();
+await page.getByRole('button', { name: 'Submit' }).click();
+```
+
+#### Navigate each flow — never guess selectors
+
+For each flow you compile, you MUST:
+1. Actually navigate the flow step by step in the browser
+2. At each step, take a screenshot/snapshot and discover the exact selectors that work
+3. Validate each selector resolves to exactly 1 element
+4. Only then record the compiled step
+
+Never batch-discover selectors from a single page load or guess selectors based on naming conventions. If you didn't see it in the DOM at the step you're compiling, don't use it.
+
 ## Handling credentials in output
 
 - For values that are credentials (username, password), use the `env:` prefix: `"value": "env:QAGENT_AUTH_USER_USERNAME"`
@@ -119,3 +196,5 @@ Return a JSON object with the compiled steps:
 - Never output credential values in your response — use `env:` prefixes
 - If you cannot find a reliable selector for an element, note it in the output: `"selector": null, "note": "could not find stable selector"`
 - If a step fails (element not found, action errors), stop and return what you have with an error: `"error": "description of what went wrong"`
+- After opening any dropdown/popover, inspect what role the items have before choosing a selector strategy
+- For every selector, assume text could be duplicated elsewhere on the page until you verify the count
