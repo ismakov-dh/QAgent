@@ -229,3 +229,4 @@ Scripts saved to qagent-scripts/
 - Only generate scaffold files if they don't already exist
 - Skip flows with matching hash unless `--force` is passed
 - If a flow fails to compile, skip it — don't block other flows
+- **Do NOT add `qagent-scripts/` to `.gitignore`.** The compiled scripts must be committed to git — they are reviewable, version-controlled test artifacts. Only `qagent-scripts/node_modules/` and `qagent-scripts/test-results/` should be gitignored. If `.gitignore` needs updating, add only those two entries, never a blanket `qagent-scripts/`.

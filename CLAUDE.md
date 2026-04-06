@@ -11,14 +11,3 @@ Every change that modifies plugin behavior must include a version bump in `.clau
 Do NOT bump for: README changes, spec/plan docs, comments-only changes, .gitignore updates.
 
 Bump in a separate commit: `chore: bump version to X.Y.Z` with a one-line summary of what changed.
-
-## Compiled Scripts (`qagent-scripts/`)
-
-The `qagent-scripts/` directory contains compiled Playwright Test scripts (`.spec.ts` files) and must be **committed to git**. These scripts are version-controlled so they're reviewable in PRs and portable to CI.
-
-**Do NOT gitignore `qagent-scripts/` itself.** Only ignore build artifacts inside it:
-- `qagent-scripts/node_modules/` — gitignored
-- `qagent-scripts/test-results/` — gitignored
-- `qagent-scripts/*.spec.ts` — **committed**
-- `qagent-scripts/package.json` — **committed**
-- `qagent-scripts/playwright.config.ts` — **committed**
