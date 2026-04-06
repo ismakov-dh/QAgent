@@ -44,12 +44,27 @@ Discover selectors using this priority (most stable first):
 - Check for `data-testid`, `data-test-id`, `role`, `aria-label`, `id`, `class` in that order
 - For text-based selectors, use the visible text content of the element
 - When multiple candidates exist, prefer the one most likely to survive a UI refactor
+- **Only use selectors you actually observed** in the DOM or accessibility snapshot. Never guess class names or attributes — if you didn't see it, don't use it.
+
+**CRITICAL — Every selector must be unique (resolve to exactly 1 element):**
+
+After discovering a selector candidate, **validate it resolves to exactly 1 element** by running:
+```javascript
+document.querySelectorAll('[data-testid="..."]').length  // for CSS
+// or use evaluate_script to count matches
+```
+
+If a selector matches multiple elements:
+1. **Scope it** to a parent container: `locator('nav').getByText(...)` or `locator('[data-testid="sidebar"]').getByRole(...)`
+2. If scoping isn't possible, use `.first()` — but only as a last resort and note it in the output: `"note": "used .first() — multiple matches"`
+3. For regex text selectors, always scope to a container
 
 **Never use:**
 - Full XPath (`/html/body/div[2]/div/form/button`)
 - Deeply nested CSS (`div > div > span:nth-child(3)`)
 - Auto-generated class names (`._a3bc2f`, `.css-1x2y3z`)
 - Framework-internal attributes (`data-reactid`, `ng-`)
+- Guessed CSS class selectors — only use classes you see in the actual DOM
 
 ## Handling credentials in output
 

@@ -205,17 +205,58 @@ Output:
   {n}. {flow-name} ........... OK ({step-count} steps → {flow-name}.spec.ts)
 ```
 
-### 3.5 Handle compilation failure
+### 3.5 Selector validation
 
-If the subagent returns an error or the flow cannot be navigated:
+After receiving the compiled steps from the subagent, validate every selector before generating the script.
+
+For each action that has a selector:
+1. Use `evaluate_script` on the still-open browser page to count how many elements match the selector
+2. If count = 1 → selector is valid
+3. If count = 0 → selector is broken. Ask the subagent to re-discover this selector, or mark the step with a warning.
+4. If count > 1 → **strict mode violation**. The selector is ambiguous. Fix it:
+   - Try scoping to a parent container (e.g., `locator('main').getByText(...)`)
+   - If scoping doesn't help, append `.first()` and add a note: `"note": "used .first() — {count} matches"`
+   - Update the selector in the compiled output before generating the script
+
+This prevents Playwright's strict mode errors at runtime. Every selector in the generated script must resolve to exactly 1 element.
+
+### 3.6 Generate .spec.ts file (smoke-run validated)
+
+Generate the `.spec.ts` file from the validated compiled output (same as previous 3.4).
+
+After writing the file, **immediately run it once** as a smoke test:
+
+```bash
+cd qagent-scripts && QAGENT_APP_URL="{url}" QAGENT_AUTH_USER_USERNAME="{user}" QAGENT_AUTH_USER_PASSWORD="{pass}" npx playwright test {flow-name}.spec.ts --reporter=json 2>&1
+```
+
+Check the result:
+- **Pass** → script is valid. Output:
+  ```
+    {n}. {flow-name} ........... OK ({step-count} steps → {flow-name}.spec.ts) ✓ smoke-run passed
+  ```
+- **Fail** → analyze the error and auto-fix:
+  - **Strict mode error** (matched N elements) → add `.first()` to the offending selector, or scope it to a container. Re-run.
+  - **Timeout** (element not found) → the selector doesn't match anything on the page. Re-discover it via the subagent or mark the flow as failed.
+  - **Other error** → log the error, mark the flow as failed compilation.
+  - Max 2 auto-fix attempts per flow. If still failing after 2 retries, mark as FAILED.
+
+Output on smoke-run failure after retries:
+```
+  {n}. {flow-name} ........... FAILED (smoke-run: {error description})
+```
+
+### 3.7 Handle compilation failure
+
+If the subagent returns an error, the flow cannot be navigated, or the smoke-run fails after retries:
 
 ```
   {n}. {flow-name} ........... FAILED ({error description})
 ```
 
-Do not generate a script file for this flow. It will use LLM fallback during `/qagent:test`.
+Do not generate a script file for this flow (delete any partial `.spec.ts`). It will use LLM fallback during `/qagent:test`.
 
-### 3.6 Close browser page
+### 3.8 Close browser page
 
 After each flow, close the browser page used by the subagent (same cleanup as `/qagent:test`).
 
