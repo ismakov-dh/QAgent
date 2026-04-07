@@ -29,20 +29,25 @@ You receive:
 
 ## Selector Strategy
 
-Discover selectors using this priority (most stable first):
+Discover selectors using this priority. Role-based and label-based selectors are the most resilient — they survive UI refactors, mirror how users perceive the page, and enforce accessible markup.
 
-| Priority | Type | Playwright API | When to use |
-|----------|------|----------------|-------------|
-| 1 | `data-testid` / `data-test-id` | `getByTestId('submit-btn')` | Always prefer if present on the element |
-| 2 | Role + accessible name | `getByRole('button', { name: 'Submit' })` | Semantic elements with labels or accessible names |
-| 3 | Text content | `getByText('Save changes')` | Visible, stable text that uniquely identifies the element |
-| 4 | `id` attribute | `locator('#email')` | Unique IDs that don't look auto-generated |
-| 5 | Short CSS selector | `locator('.checkout-btn')` | Only if none of the above work |
+| Tier | Type | Playwright API | When to use |
+|------|------|----------------|-------------|
+| 1 | Role + accessible name | `getByRole('button', { name: 'Submit' })` | Interactive elements: buttons, links, headings, checkboxes, comboboxes, dialogs, navigation, tabs |
+| 2 | Label | `getByLabel('Email')` | Form fields with visible `<label>`, `aria-label`, or `aria-labelledby` — most readable selector for inputs |
+| 3 | Text content | `getByText('Save changes')` | Non-interactive, static text: paragraphs, badges, status messages |
+| 4 | Placeholder | `getByPlaceholder('Search...')` | Inputs without labels (signals an accessibility gap — note it) |
+| 5 | Test ID | `getByTestId('submit-btn')` | Custom components with no semantic role, dynamically generated content, or when tiers 1-4 produce ambiguous matches |
+| 6 | CSS selector | `locator('#email')` or `locator('.checkout-btn')` | Only when nothing above works — unique IDs or short class selectors that aren't auto-generated |
+
+**Why `getByRole` first, not `getByTestId`:** Test IDs are stable but invisible to users. Role-based selectors validate that the app is accessible AND find elements by how users interact with them. A `getByRole('button', { name: 'Save' })` breaks when the button disappears or becomes inaccessible — which is a real bug worth catching. A `getByTestId('save-btn')` only breaks when a developer removes the attribute.
 
 **To discover selectors:**
 - After performing the action, use `evaluate_script` to inspect the target element's attributes
-- Check for `data-testid`, `data-test-id`, `role`, `aria-label`, `id`, `class` in that order
-- For text-based selectors, use the visible text content of the element
+- Check for `role`, `aria-label`, `aria-labelledby`, associated `<label>`, `placeholder`, `data-testid`, `id`, `class` — in that order
+- For form fields, prefer `getByLabel()` — it's the most readable and validates label association
+- For buttons and links, prefer `getByRole()` with `name` option
+- For static text, use `getByText()` with `{ exact: true }` when the text is short or common
 - When multiple candidates exist, prefer the one most likely to survive a UI refactor
 - **Only use selectors you actually observed** in the DOM or accessibility snapshot. Never guess class names or attributes — if you didn't see it, don't use it.
 
@@ -143,6 +148,50 @@ For each flow you compile, you MUST:
 
 Never batch-discover selectors from a single page load or guess selectors based on naming conventions. If you didn't see it in the DOM at the step you're compiling, don't use it.
 
+## Assertions and Waiting
+
+Generated scripts must use Playwright's built-in auto-waiting and web-first assertions. Never add manual waits.
+
+**Web-first assertions auto-retry** — they keep polling the DOM until the condition is met or timeout is reached:
+```typescript
+// GOOD — auto-retries until visible (up to timeout)
+await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+await expect(page.getByTestId('total')).toHaveText('$99.00');
+await expect(page.getByRole('listitem')).toHaveCount(5);
+```
+
+**Non-retrying assertions do NOT auto-retry** — the value is already resolved before the assertion runs:
+```typescript
+// BAD — resolves textContent() once, then asserts (no retry on stale value)
+const text = await page.getByTestId('total').textContent();
+expect(text).toBe('$99.00');
+
+// GOOD — web-first equivalent
+await expect(page.getByTestId('total')).toHaveText('$99.00');
+```
+
+**Rule:** If asserting something about the DOM, always use `await expect(locator)` — never `expect(await locator.something())`.
+
+**Never use `page.waitForTimeout()`:**
+```typescript
+// BAD — arbitrary sleep, flaky in CI
+await page.waitForTimeout(2000);
+
+// GOOD — wait for the specific condition
+await expect(page.getByRole('button', { name: 'Submit' })).toBeEnabled();
+await page.waitForURL('**/dashboard');
+await page.waitForLoadState('networkidle');
+```
+
+**Waiting for navigation:** After clicks that trigger navigation, use `waitForURL()` or assert on an element that only exists on the target page. Do not add sleeps.
+
+**Soft assertions** — use `expect.soft()` only when you want to check multiple things without stopping on first failure:
+```typescript
+await expect.soft(page.getByText('Name')).toBeVisible();
+await expect.soft(page.getByText('Email')).toBeVisible();
+```
+Use sparingly — hard assertions (default) are better because they stop the test at the first real problem.
+
 ## Handling credentials in output
 
 - For values that are credentials (username, password), use the `env:` prefix: `"value": "env:QAGENT_AUTH_USER_USERNAME"`
@@ -161,8 +210,8 @@ Return a JSON object with the compiled steps:
       "intent": "Login as user",
       "actions": [
         { "type": "goto", "selector": null, "value": "env:QAGENT_APP_URL" },
-        { "type": "fill", "selector": "getByRole('textbox', { name: 'Email' })", "value": "env:QAGENT_AUTH_USER_USERNAME" },
-        { "type": "fill", "selector": "getByRole('textbox', { name: 'Password' })", "value": "env:QAGENT_AUTH_USER_PASSWORD" },
+        { "type": "fill", "selector": "getByLabel('Email')", "value": "env:QAGENT_AUTH_USER_USERNAME" },
+        { "type": "fill", "selector": "getByLabel('Password')", "value": "env:QAGENT_AUTH_USER_PASSWORD" },
         { "type": "click", "selector": "getByRole('button', { name: 'Sign in' })" }
       ]
     },
@@ -186,9 +235,15 @@ Return a JSON object with the compiled steps:
 | `check` | `page.{selector}.check()` | Checking a checkbox |
 | `select` | `page.{selector}.selectOption(value)` | Selecting from a dropdown |
 | `press_key` | `page.keyboard.press(value)` | Pressing a keyboard key |
-| `expect_visible` | `expect(page.{selector}).toBeVisible()` | Asserting an element is visible |
-| `expect_text` | `expect(page.{selector}).toHaveText(value)` | Asserting element has specific text |
-| `expect_url` | `expect(page).toHaveURL(value)` | Asserting the page URL |
+| `wait_for_url` | `page.waitForURL(value)` | Waiting for navigation to complete |
+| `expect_visible` | `expect(page.{selector}).toBeVisible()` | Asserting element is visible (web-first, auto-retries) |
+| `expect_hidden` | `expect(page.{selector}).not.toBeVisible()` | Asserting element disappeared (e.g., loading spinner) |
+| `expect_text` | `expect(page.{selector}).toHaveText(value)` | Asserting element has specific text (web-first) |
+| `expect_enabled` | `expect(page.{selector}).toBeEnabled()` | Asserting a button/input is enabled (use before clicking disabled buttons) |
+| `expect_url` | `expect(page).toHaveURL(value)` | Asserting the page URL (web-first) |
+| `expect_count` | `expect(page.{selector}).toHaveCount(value)` | Asserting number of matching elements |
+
+**All `expect_*` actions are web-first assertions** — they auto-retry until the condition is met or timeout expires. Never resolve a value first and assert on the resolved value.
 
 ## Important
 
@@ -198,3 +253,7 @@ Return a JSON object with the compiled steps:
 - If a step fails (element not found, action errors), stop and return what you have with an error: `"error": "description of what went wrong"`
 - After opening any dropdown/popover, inspect what role the items have before choosing a selector strategy
 - For every selector, assume text could be duplicated elsewhere on the page until you verify the count
+- Prefer `getByRole()` and `getByLabel()` over `getByTestId()` — role/label selectors validate accessibility and survive refactors
+- Never generate `page.waitForTimeout()` — use web-first assertions or `waitForURL()` instead
+- All assertions must be web-first (`await expect(locator)`) — never `expect(await locator.textContent())`
+- Generated tests should be isolated — no shared mutable state between independent tests

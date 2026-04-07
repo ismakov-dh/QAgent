@@ -86,11 +86,11 @@ export default defineConfig({
   use: {
     baseURL: process.env.QAGENT_APP_URL,
     screenshot: 'only-on-failure',
-    trace: 'retain-on-failure',
+    trace: 'on-first-retry',
   },
   timeout: 30_000,
-  retries: 0,
-  workers: 3,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 2 : 3,
   fullyParallel: true,
   reporter: [['json', { outputFile: 'test-results/results.json' }]],
 });
@@ -195,12 +195,22 @@ Then the test block. For each step in the compiled output:
   - `check` → `await page.{selector}.check();`
   - `select` → `await page.{selector}.selectOption({value});`
   - `press_key` → `await page.keyboard.press({value});`
+  - `wait_for_url` → `await page.waitForURL({value});`
   - `expect_visible` → `await expect(page.{selector}).toBeVisible();`
+  - `expect_hidden` → `await expect(page.{selector}).not.toBeVisible();`
   - `expect_text` → `await expect(page.{selector}).toHaveText({value});`
+  - `expect_enabled` → `await expect(page.{selector}).toBeEnabled();`
   - `expect_url` → `await expect(page).toHaveURL({value});`
+  - `expect_count` → `await expect(page.{selector}).toHaveCount({value});`
 
 For values with `env:` prefix, convert to `process.env.VARNAME!`.
 For literal string values, wrap in quotes.
+
+**Codegen rules:**
+- All `expect_*` are web-first assertions — they auto-retry. Never generate `const text = await ...; expect(text)...` patterns.
+- Never generate `page.waitForTimeout()`. Use `waitForURL()`, `waitForLoadState()`, or an `expect_*` assertion instead.
+- Prefer `getByRole()`/`getByLabel()` selectors in generated code — they validate accessibility and survive refactors.
+- Each test should be isolated — no shared mutable state between independent tests.
 
 Write the file to `qagent-scripts/{flow-name}.spec.ts`.
 
@@ -257,11 +267,32 @@ After all flows are compiled, check for `depends_on` relationships between flows
 For each dependency group:
 1. Merge the individual compiled steps into a single `.spec.ts` file named after the first flow in the chain
 2. Wrap all tests in a `test.describe.serial` block so Playwright runs them in order
-3. Declare shared `let` variables in the `describe` scope for state passed between flows (e.g., created entity IDs)
+3. Use a shared `page` context across tests in the serial block — create it in `test.beforeAll` and close in `test.afterAll`:
+   ```typescript
+   test.describe.serial('submit-approve-chain', () => {
+     let page: Page;
+
+     test.beforeAll(async ({ browser }) => {
+       page = await browser.newPage();
+     });
+
+     test.afterAll(async () => {
+       await page.close();
+     });
+
+     test('submit-flow', async () => {
+       // uses shared page
+     });
+
+     test('approve-flow', async () => {
+       // same page, state preserved
+     });
+   });
+   ```
 4. For flows that require a different auth role, add explicit logout/login steps between tests
 5. Delete the individual `.spec.ts` files that were merged into the group
 
-Flows without `depends_on` remain as individual `.spec.ts` files (parallel-safe).
+Flows without `depends_on` remain as individual `.spec.ts` files — each test is fully isolated (Playwright creates a fresh page per test by default).
 
 ### 3.8 Handle compilation failure
 
